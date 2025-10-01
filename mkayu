@@ -104,13 +104,9 @@ if game.PlaceId == 137758705131176 then
     FlyModule.IsOnMobile = UserInputService.TouchEnabled
     FlyModule.Active = false
     FlyModule.Speed = 1
-    FlyModule.CFSpeed = 50
     
     local CONTROL = {F = 0, B = 0, L = 0, R = 0}
-    local CF_UP = 0
     local flyConnections = {}
-    local cfConnections = {}
-    local CFloop = nil
 
     local function getRoot(char)
         return char:FindFirstChild("HumanoidRootPart") or char:WaitForChild("HumanoidRootPart")
@@ -237,36 +233,376 @@ if game.PlaceId == 137758705131176 then
         CONTROL = {F = 0, B = 0, L = 0, R = 0}
     end
 
-    function FlyModule:StartCFrameFly()
-        local char = getCharacter()
-        local humanoid = char:WaitForChild("Humanoid")
-        local Head = char:WaitForChild("Head")
+    -- WalkSpeed & JumpPower Module
+    local MovementModule = {}
+    MovementModule.DefaultWS = 16
+    MovementModule.DefaultJP = 50
+    MovementModule.WalkSpeed = 16
+    MovementModule.JumpPower = 50
+    MovementModule.BypassActive = false
+    
+    local wsLoop = nil
+    local jpLoop = nil
 
-        humanoid.PlatformStand = true
-        Head.Anchored = true
-
-        if not self.IsOnMobile then
-            local upConn = UserInputService.InputBegan:Connect(function(input, processed)
-                if processed then return end
-                if input.KeyCode == Enum.KeyCode.E then CF_UP = 1
-                elseif input.KeyCode == Enum.KeyCode.Q then CF_UP = -1 end
-            end)
-            
-            local downConn = UserInputService.InputEnded:Connect(function(input, processed)
-                if input.KeyCode == Enum.KeyCode.E or input.KeyCode == Enum.KeyCode.Q then CF_UP = 0 end
-            end)
-            
-            table.insert(cfConnections, upConn)
-            table.insert(cfConnections, downConn)
+    function MovementModule:ActivateBypass()
+        if self.BypassActive then
+            return false, "Bypass sudah aktif!"
         end
 
-        CFloop = RunService.Heartbeat:Connect(function(deltaTime)
-            local camera = workspace.CurrentCamera
-            local moveVector = Vector3.new()
+        local success, err = pcall(function()
+            local mt = getrawmetatable(game)
+            local old = mt.__newindex
+            setreadonly(mt, false)
 
-            if self.IsOnMobile then
-                local controlModule = require(lp.PlayerScripts:WaitForChild("PlayerModule"):WaitForChild("ControlModule"))
-                local dir = controlModule:GetMoveVector()
+            mt.__newindex = newcclosure(function(t, k, v)
+                if (t:IsA("Humanoid") and (k == "WalkSpeed" or k == "JumpPower" or k == "JumpHeight")) then
+                    return
+                end
+                return old(t, k, v)
+            end)
+
+            setreadonly(mt, true)
+        end)
+
+        if success then
+            self.BypassActive = true
+            return true, "WalkSpeed & JumpPower dilindungi!"
+        else
+            return false, "Gagal mengaktifkan bypass: " .. tostring(err)
+        end
+    end
+
+    function MovementModule:SetWalkSpeed(enabled)
+        if enabled then
+            local hum = getHumanoid()
+            if hum then 
+                hum.WalkSpeed = self.WalkSpeed 
+            end
+
+            wsLoop = RunService.Heartbeat:Connect(function()
+                local hum = getHumanoid()
+                if hum and hum.WalkSpeed ~= self.WalkSpeed then
+                    hum.WalkSpeed = self.WalkSpeed
+                end
+            end)
+        else
+            if wsLoop then 
+                wsLoop:Disconnect() 
+                wsLoop = nil 
+            end
+            
+            local hum = getHumanoid()
+            if hum then 
+                hum.WalkSpeed = self.DefaultWS 
+            end
+        end
+    end
+
+    function MovementModule:UpdateWalkSpeed(value)
+        self.WalkSpeed = value
+        local hum = getHumanoid()
+        if hum and wsLoop then
+            hum.WalkSpeed = value
+        end
+    end
+
+    function MovementModule:SetJumpPower(enabled)
+        if enabled then
+            local hum = getHumanoid()
+            if hum then
+                if hum.UseJumpPower then
+                    hum.JumpPower = self.JumpPower
+                else
+                    hum.JumpHeight = self.JumpPower
+                end
+            end
+
+            jpLoop = RunService.Heartbeat:Connect(function()
+                local hum = getHumanoid()
+                if hum then
+                    if hum.UseJumpPower and hum.JumpPower ~= self.JumpPower then
+                        hum.JumpPower = self.JumpPower
+                    elseif not hum.UseJumpPower and hum.JumpHeight ~= self.JumpPower then
+                        hum.JumpHeight = self.JumpPower
+                    end
+                end
+            end)
+        else
+            if jpLoop then 
+                jpLoop:Disconnect() 
+                jpLoop = nil 
+            end
+            
+            local hum = getHumanoid()
+            if hum then
+                if hum.UseJumpPower then
+                    hum.JumpPower = self.DefaultJP
+                else
+                    hum.JumpHeight = self.DefaultJP
+                end
+            end
+        end
+    end
+
+    function MovementModule:UpdateJumpPower(value)
+        self.JumpPower = value
+        local hum = getHumanoid()
+        if hum and jpLoop then
+            if hum.UseJumpPower then
+                hum.JumpPower = value
+            else
+                hum.JumpHeight = value
+            end
+        end
+    end
+
+    -- ====================
+    -- AUTO FARM MODULE
+    -- ====================
+    local AutoFarm = {}
+    AutoFarm.Active = false
+
+    function AutoFarm:RunInstant(notifyCallback)
+        task.spawn(function()
+            while self.Active do
+                for i, cf in ipairs(GameData.Checkpoints) do
+                    if not self.Active then break end
+                    
+                    local hrp = getHRP()
+                    hrp.CFrame = cf
+                    task.wait(0.2)
+                    
+                    local cpPart = Utils.getCheckpointPart(i)
+                    if cpPart then 
+                        Utils.fireTouch(cpPart) 
+                    end
+                    
+                    Utils.doJump()
+                    
+                    if notifyCallback then
+                        notifyCallback("Checkpoint Progress", "CP " .. i .. "/" .. #GameData.Checkpoints, 2)
+                    end
+                    
+                    task.wait(3)
+                end
+
+                local hrp = getHRP()
+                hrp.CFrame = GameData.Summit
+                task.wait(0.2)
+                
+                local sPart = Utils.getSummitPart()
+                if sPart then 
+                    Utils.fireTouch(sPart) 
+                end
+                
+                Utils.doJump()
+                
+                if notifyCallback then
+                    notifyCallback("Summit Reached!", "Total Summits: " .. Utils.getTotalSummit(), 5)
+                end
+                
+                task.wait(2)
+                
+                Utils.resetClimb()
+                task.wait(1)
+                Utils.doJump()
+            end
+        end)
+    end
+
+    -- ====================
+    -- UI SETUP
+    -- ====================
+    local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
+    local Window = Rayfield:CreateWindow({
+        Name = "Mount Kayu",
+        LoadingTitle = "Auto Summit Mount",
+        LoadingSubtitle = "by Zull",
+        Theme = "Amethyst",
+        DisableRayfieldPrompts = false,
+        KeySystem = false
+    })
+
+    -- ====================
+    -- MAIN TAB
+    -- ====================
+    local Main = Window:CreateTab("Main", nil)
+    
+    Main:CreateSection("Auto Farm Summit")
+    
+    Main:CreateParagraph({
+        Title = "Auto Summit Info",
+        Content = "Sebelum Auto Summit wajib reset checkpoint. Auto Summit sudah support tween dan instant, jika ingin super safety (tidak terdetect system) silahkan pilih tween tapi agak lama, kalo mau cepet ya instant tapi agak beresiko kalo ketauan admin."
+    })
+
+    Main:CreateButton({
+        Name = "Reset Checkpoint",
+        Callback = function()
+            Utils.resetClimb()
+            Rayfield:Notify({
+                Title = "Checkpoint Reset",
+                Content = "Checkpoint 0/5",
+                Duration = 3
+            })
+            Utils.doJump()
+        end
+    })
+
+    Main:CreateToggle({
+        Name = "Auto Summit (Instant)",
+        CurrentValue = false,
+        Flag = "AutoSummitInstant",
+        Callback = function(Value)
+            AutoFarm.Active = Value
+            if Value then
+                AutoFarm:RunInstant(function(title, content, duration)
+                    Rayfield:Notify({
+                        Title = title,
+                        Content = content,
+                        Duration = duration
+                    })
+                end)
+            end
+        end
+    })
+
+    -- ====================
+    -- TOOLS TAB
+    -- ====================
+    local Tools = Window:CreateTab("Tools", nil)
+
+    -- Teleport Section
+    Tools:CreateSection("Teleport")
+    
+    Tools:CreateParagraph({
+        Title = "Info",
+        Content = "Teleport ke basecamp akan mereset checkpoint anda."
+    })
+
+    Tools:CreateButton({
+        Name = "Teleport to Basecamp",
+        Callback = function()
+            Utils.resetClimb()
+            Rayfield:Notify({
+                Title = "Teleport",
+                Content = "Kembali ke basecamp",
+                Duration = 3
+            })
+            task.wait(1)
+            Utils.doJump()
+        end
+    })
+
+    local selectedCP = "Checkpoint 1"
+
+    Tools:CreateDropdown({
+        Name = "Pilih Checkpoint",
+        Options = {"Checkpoint 1", "Checkpoint 2", "Checkpoint 3", "Checkpoint 4", "Checkpoint 5", "Summit"},
+        CurrentOption = {"Checkpoint 1"},
+        MultipleOptions = false,
+        Flag = "CPDropdown",
+        Callback = function(Option)
+            selectedCP = Option[1]
+        end
+    })
+
+    Tools:CreateButton({
+        Name = "Teleport to Selected",
+        Callback = function()
+            local hrp = getHRP()
+            
+            if selectedCP == "Summit" then
+                hrp.CFrame = GameData.Summit
+                local part = Utils.getSummitPart()
+                if part then Utils.fireTouch(part) end
+                Utils.doJump()
+                Rayfield:Notify({Title = "Teleport", Content = "Teleport ke Summit", Duration = 3})
+            else
+                local index = tonumber(selectedCP:match("%d+"))
+                if index and GameData.Checkpoints[index] then
+                    hrp.CFrame = GameData.Checkpoints[index]
+                    local part = Utils.getCheckpointPart(index)
+                    if part then Utils.fireTouch(part) end
+                    Utils.doJump()
+                    Rayfield:Notify({Title = "Teleport", Content = "Teleport ke CP " .. index, Duration = 3})
+                end
+            end
+        end
+    })
+
+    -- Teleport to Player Section
+    Tools:CreateSection("Teleport to Player")
+
+    local playerList = {}
+    local selectedPlayer = nil
+    local playerDropdown = nil
+
+    local function getPlayerList()
+        local players = {}
+        for _, player in ipairs(Players:GetPlayers()) do
+            if player ~= lp then
+                table.insert(players, player.Name)
+            end
+        end
+        return players
+    end
+
+    local function refreshPlayerList()
+        playerList = getPlayerList()
+        if #playerList == 0 then
+            playerList = {"No players available"}
+            selectedPlayer = nil
+        else
+            selectedPlayer = playerList[1]
+        end
+        return playerList
+    end
+
+    -- Initialize player list
+    refreshPlayerList()
+
+    playerDropdown = Tools:CreateDropdown({
+        Name = "Select Player",
+        Options = playerList,
+        CurrentOption = {playerList[1] or "No players available"},
+        MultipleOptions = false,
+        Flag = "PlayerDropdown",
+        Callback = function(Option)
+            selectedPlayer = Option[1]
+        end
+    })
+
+    Tools:CreateButton({
+        Name = "Refresh Player List",
+        Callback = function()
+            local newPlayerList = refreshPlayerList()
+            
+            -- Update dropdown options
+            if playerDropdown then
+                playerDropdown:UpdateOptions(newPlayerList)
+            end
+            
+            Rayfield:Notify({
+                Title = "Player List",
+                Content = "Found " .. (#newPlayerList == 1 and newPlayerList[1] == "No players available" and "0" or tostring(#newPlayerList)) .. " players",
+                Duration = 2
+            })
+        end
+    })
+
+    Tools:CreateButton({
+        Name = "Teleport to Player",
+        Callback = function()
+            if not selectedPlayer or selectedPlayer == "No players available" then
+                Rayfield:Notify({
+                    Title = "Teleport Failed",
+                    Content = "No player selected!",
+                    Duration = 3
+                })
+                return
+            end
+
+            local targetPlayer = Players: controlModule:GetMoveVector()
                 moveVector = (camera.CFrame.RightVector * dir.X + camera.CFrame.LookVector * -dir.Z)
             else
                 moveVector = (camera.CFrame.RightVector * CONTROL.R + camera.CFrame.RightVector * CONTROL.L + 
